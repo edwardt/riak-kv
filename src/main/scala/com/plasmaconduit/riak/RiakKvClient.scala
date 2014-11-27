@@ -8,6 +8,9 @@ import com.plasmaconduit.url.URL
 import io.netty.buffer.{Unpooled, ByteBuf}
 import rx.lang.scala.Observable
 
+import scala.util.control.NoStackTrace
+import scala.util.{Try, Failure, Success}
+
 final case class RiakKvClient(server: URL) {
 
   def getBucketType(bucketType: String): RiakBucketType = {
@@ -22,6 +25,32 @@ final case class RiakBucketType(server: URL, bucketType: String) {
     RiakBucket(server, bucketType, bucket)
   }
 
+  def listBuckets: Observable[String] = {
+    HttpClient
+      .get(server.setPath(s"/types/$bucketType/buckets").setQuery("buckets=true"))
+      .flatMap(response => response.status match {
+        case Ok => response
+          .getContent
+          .map(n => Unpooled.copiedBuffer(n))
+          .reduce((m, n) => Unpooled.wrappedBuffer(m, n))
+          .map(StringDecoder())
+          .flatMap(value => JsonParser.parse(value) match {
+            case Failure(error) => Observable.error(error)
+            case Success(json)  =>
+              val result = for {
+                obj <- json.as[Map[String, JsValue]]
+                buckets <- obj.get("buckets").fold[Try[JsValue]](Failure(RiakMissingBucketKey))(Success(_))
+                list <- buckets.as[List[String]]
+              } yield list.filter(_ != "__riak_client_test__")
+              result match {
+                case Success(buckets) => Observable.from(buckets)
+                case Failure(error)   => Observable.error(error)
+              }
+          })
+        case _ => Observable.empty
+      })
+  }
+
 }
 
 final case class RiakBucket(server: URL, bucketType: String, bucket: String) {
@@ -31,14 +60,14 @@ final case class RiakBucket(server: URL, bucketType: String, bucket: String) {
     HttpClient
       .get(location.url)
       .flatMap(response => response.status match {
-      case Ok => response
-        .getContent
-        .map(n => Unpooled.copiedBuffer(n))
-        .reduce((m, n) => Unpooled.wrappedBuffer(m, n))
-        .map(body => RiakValue[ByteBuf](location, response, body))
-      case NotFound => Observable.empty
-      case _ => Observable.error(RiakMultiValueResponse)
-    })
+        case Ok => response
+          .getContent
+          .map(n => Unpooled.copiedBuffer(n))
+          .reduce((m, n) => Unpooled.wrappedBuffer(m, n))
+          .map(body => RiakValue[ByteBuf](location, response, body))
+        case NotFound => Observable.empty
+        case _        => Observable.error(RiakMultiValueResponse)
+      })
   }
 
   def getAsString(key: String): Observable[RiakValue[String]] = {
@@ -50,8 +79,8 @@ final case class RiakBucket(server: URL, bucketType: String, bucket: String) {
 
   def getAsJson(key: String): Observable[RiakValue[JsValue]] = {
     getAsString(key).flatMap(value => JsonParser.parse(value.body) match {
-      case Some(json) => Observable.just(value.copy(body = json))
-      case None       => Observable.error(RiakFailedParsingAsJson)
+      case Success(json)  => Observable.just(value.copy(body = json))
+      case Failure(error) => Observable.error(error)
     })
   }
 
@@ -116,8 +145,9 @@ final case class RiakBucket(server: URL, bucketType: String, bucket: String) {
 
 }
 
-object RiakMultiValueResponse extends Throwable
-object RiakFailedParsingAsJson extends Throwable
+object RiakMultiValueResponse extends NoStackTrace
+
+object RiakMissingBucketKey extends NoStackTrace
 
 final case class RiakLocation(server: URL, bucketType: String, bucket: String, key: String) {
 
