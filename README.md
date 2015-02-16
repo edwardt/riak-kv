@@ -9,5 +9,5 @@ Install
 Add the following to your `Build.scala`
 ```
 resolvers += "Plasma Conduit Repository" at "http://dl.bintray.com/plasmaconduit/releases",
-libraryDependencies += "com.plasmaconduit" %% "riak-kv" % "0.5.0"
+libraryDependencies += "com.plasmaconduit" %% "riak-kv" % "0.6.0"
 ```
